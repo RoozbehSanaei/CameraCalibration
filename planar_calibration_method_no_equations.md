@@ -1,4 +1,4 @@
-# Planar calibration algorithm description (no equations)
+# Planar calibration algorithm description
 
 Planar camera calibration in this repository is a procedure that estimates a camera’s internal parameters and lens distortion by observing a flat target from multiple viewpoints. The target can be a checkerboard, dot grid, or any printed pattern on a rigid flat surface, as long as you know the target’s point coordinates in the target’s own coordinate system and you can provide the corresponding measured pixel coordinates in each image. The output is a set of camera parameters that can predict where points on the target should appear in the image, plus a pose estimate for each captured image showing where the camera was relative to the target.
 
