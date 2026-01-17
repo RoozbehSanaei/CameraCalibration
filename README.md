@@ -12,7 +12,7 @@ The calibration model is a pinhole camera with Brown–Conrady distortion:
 
 ## Repository layout
 
-- `planar_calibration_method.tex`  
+- `planar_calibration_method.md`  
   Method write-up shared by both implementations.
 
 - `cpp/`
