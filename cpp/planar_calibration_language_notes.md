@@ -1,308 +1,171 @@
-# Modern C++ features used in `calib_eigen_modern.cpp`
+## `#include` headers
 
-This document explains the C++ language and standard-library features used in the calibration implementation, assuming **basic C++ familiarity**.  
-All examples are taken directly from the code.
-
----
-
-## `namespace calib`
-
-Everything is wrapped in a dedicated namespace so names like `Intrinsics`, `homographyDLT`, and `projectPoint` don’t clash when you integrate this into a larger project. The file then opts into the names inside `main()`.
-
-```cpp
-namespace calib {
-  // ... all calibration code ...
-} // namespace calib
-
-int main() {
-  using namespace calib;
-  // ... uses Intrinsics, Distortion, etc.
-}
-```
+In the first lines, the file pulls in outside building blocks with statements like `#include <Eigen/Dense>` and `#include <vector>`. After those lines, the rest of the file can name things such as `Eigen::MatrixXd` and `std::vector<Extrinsics>` because the compiler has already been shown what those names mean. This keeps the file readable because it does not need to re-declare large chunks of functionality, and it keeps compilation stable because the dependencies are declared upfront.
 
 ---
 
-## Type aliases with `using`
+## `namespace` blocks
 
-The code defines short, meaningful aliases for Eigen matrix/vector types. This reduces verbosity in signatures and makes intent clearer throughout the file.
-
-```cpp
-using Mat3  = Eigen::Matrix3d;
-using Vec2  = Eigen::Vector2d;
-using Vec3  = Eigen::Vector3d;
-using MatX  = Eigen::MatrixXd;
-using VecX  = Eigen::VectorXd;
-```
+The implementation is wrapped inside `namespace calib { ... }`, so every type and function declared there belongs to a named “group.” When the program later refers to items from this file, they live under `calib::` rather than mixing into the global set of names shared by everything else in a project. This keeps naming conflicts rare when multiple files define similar words like `Intrinsics` or `projectPoint`, and it makes it clearer which parts belong to this module.
 
 ---
 
-## Plain `struct` bundles with in-class default initialization
+## `using namespace` directive
 
-Instead of constructors, these structs use default member initializers so they start in a safe state automatically. You see this used repeatedly when the code creates `initD{}` (all zeros) and `Extrinsics{}` (zero vectors).
-
-```cpp
-struct Intrinsics final {
-  double fx {0.0};
-  double fy {0.0};
-  double cx {0.0};
-  double cy {0.0};
-  double skew {0.0};
-};
-
-struct Distortion final {
-  double k1 {0.0};
-  double k2 {0.0};
-  double p1 {0.0};
-  double p2 {0.0};
-};
-
-struct Extrinsics final {
-  Vec3 rvec {Vec3::Zero()};
-  Vec3 tvec {Vec3::Zero()};
-};
-```
+Inside `main()`, the line `using namespace calib;` allows the code to write names like `SyntheticConfig` and `Intrinsics` without prefixing them with `calib::` each time. The compiler still knows exactly which names are meant because the directive tells it to also look inside the `calib` group during name lookup in that scope. This keeps the main routine easier to scan because the focus stays on the run flow rather than repeated prefixes.
 
 ---
 
-## `final` on small data types
+## `using` type aliases
 
-`final` communicates that these are not designed for inheritance. It’s a design signal: they’re value-like parameter bundles, not base classes.
-
-```cpp
-struct Distortion final {
-  double k1 {0.0};
-  double k2 {0.0};
-  double p1 {0.0};
-  double p2 {0.0};
-};
-```
+Near the top, the code defines shorter type names with declarations like `using Mat3 = Eigen::Matrix3d;` and `using VecX = Eigen::VectorXd;`. After that, the code can declare variables and parameters using `Mat3` and `VecX` while still referring to the same underlying Eigen types. This keeps many function signatures and local variables compact, which makes long numeric expressions easier to follow.
 
 ---
 
-## `[[nodiscard]]` to catch ignored results
+## `struct` as a plain data record
 
-Numerical code often returns matrices/vectors that must be used. Marking functions `[[nodiscard]]` asks the compiler to warn you if you call them and discard the returned value.
-
-```cpp
-[[nodiscard]] inline Mat3 rodriguesToR(const Vec3& rvec) noexcept { /* ... */ }
-
-[[nodiscard]] inline VecX computeResiduals(
-    const VecX& p,
-    const Eigen::Ref<const MatX>& objectPts,
-    std::span<const MatX> imagePts) { /* ... */ }
-```
+The file uses `struct Intrinsics final { ... };`, `struct Distortion final { ... };`, and `struct Extrinsics final { ... };` to hold related values together. Later, functions accept and return these objects so the code can pass one “package” rather than many separate numbers. This reduces the risk of mixing up values such as `cx` and `cy`, because the names travel together inside a single object.
 
 ---
 
-## `inline` for small utilities
+## `final` for fixed-purpose types
 
-Many helpers are `inline`, which is typical for “header-style” utilities. It encourages inlining and avoids separate compilation-unit linkage concerns if you later move code into headers.
-
-```cpp
-[[nodiscard]] inline double sqr(const double x) noexcept { return x * x; }
-
-template <typename T>
-[[nodiscard]] inline T clamp(const T v, const T lo, const T hi) noexcept {
-  return std::clamp(v, lo, hi);
-}
-```
+Those same record types are marked with `final`, as in `struct Intrinsics final`. That tells the language that nobody should build a derived type that extends it through inheritance. In this file, these types act like fixed-format containers for calibration parameters, so keeping them non-extendable helps them remain predictable and avoids surprising extra behavior from subclassing.
 
 ---
 
-## `noexcept` to separate “pure math” from “validated API”
+## Brace initialization `{}`
 
-Math kernels that should not throw are marked `noexcept`. Functions that validate inputs and may throw (like `homographyDLT`) are not `noexcept`. This cleanly separates safe inner loops from boundary checks.
-
-```cpp
-[[nodiscard]] inline Vec2 distortNormalized(const Vec2& xy, const Distortion& d) noexcept { /* ... */ }
-
-[[nodiscard]] inline Mat3 homographyDLT(
-    const Eigen::Ref<const MatX>& planarXY,
-    const Eigen::Ref<const MatX>& imageUV) {
-  if (planarXY.rows() < 4) throw std::runtime_error("homographyDLT: need >= 4 points");
-  /* ... */
-}
-```
+The code frequently initializes values using braces, such as member defaults like `double fx {0.0};` and object creation like `const SyntheticConfig cfg{};` and `const Intrinsics gtK{800.0, 820.0, ...};`. Braces give a clear “set these fields now” moment and produce a well-defined starting state. This keeps runs repeatable because every new object begins with known values instead of whatever happened to be in memory.
 
 ---
 
-## `const` references and local `const` variables
+## `[[nodiscard]]` attribute
 
-Parameters are passed by `const&` to avoid copies and to prevent accidental mutation. Inside functions, intermediate values are declared `const` to keep logic stable and readable.
-
-```cpp
-[[nodiscard]] inline Vec2 projectPoint(
-    const Vec3& X,
-    const Intrinsics& K,
-    const Distortion& D,
-    const Extrinsics& E) noexcept {
-
-  const Mat3 R = rodriguesToR(E.rvec);
-  const Vec3 Xc = R * X + E.tvec;
-  /* ... */
-}
-```
+Several helper functions begin with `[[nodiscard]]`, such as the small math utilities and solver helpers. In practical terms, this asks the compiler to warn if the code calls that function and then throws away the result. In this calibration pipeline, a returned matrix, vector, or cost number is usually meant to drive the next step, so this extra check helps catch cases where a computed value is accidentally ignored and the program continues with stale state.
 
 ---
 
-## Function templates (the `clamp` helper)
+## `inline` on function definitions
 
-The clamp helper is templated so it works for multiple numeric types consistently, but the call sites remain clean.
-
-```cpp
-template <typename T>
-[[nodiscard]] inline T clamp(const T v, const T lo, const T hi) noexcept {
-  return std::clamp(v, lo, hi);
-}
-```
+Many of the small helpers are declared with `inline`, for example `inline double sqr(...)` and other short functions. This changes how the compiler treats repeated definitions across translation units if the code is later moved into a header-style layout. It also signals that the function body is intended to be lightweight and used often. The file stays organized with small, reusable helpers without forcing separate compilation units for each one.
 
 ---
 
-## `std::string_view` for lightweight timer names
+## `noexcept` for “no exception” functions
 
-The timer stores its label as `std::string_view`, which avoids allocating/copying strings. In this file, the labels are string literals, which are safe to view.
-
-```cpp
-struct ScopedTimer final {
-  std::string_view name;
-  std::chrono::steady_clock::time_point t0 {std::chrono::steady_clock::now()};
-  explicit ScopedTimer(std::string_view n) : name(n) {}
-  ~ScopedTimer() { /* prints elapsed */ }
-};
-```
+Some functions end with `noexcept`, for example `inline double sqr(...) noexcept` and rotation helpers like `Mat3 rodriguesToR(...) noexcept`. That is a promise: if an exception tries to escape from that function, the program treats it as a serious violation. In this code, these functions are pure numeric transforms; keeping them in a “no surprise exits” category makes the overall flow steadier, especially inside tight loops.
 
 ---
 
-## RAII via `ScopedTimer`
+## `template <typename T>` function template
 
-The timer starts in the constructor and prints in the destructor. The braces in `main()` guarantee the timer ends exactly where you expect, without manual “stop” calls.
-
-```cpp
-{
-  ScopedTimer t("bundle_adjust");
-  pOpt = levenbergMarquardtPhased(/* ... */);
-} // timer prints here automatically
-```
+The file defines a generic clamp helper using `template <typename T>` and then calls it in places like `cos_theta = clamp(cos_theta, -1.0, 1.0);`. This means the compiler produces a concrete version of `clamp` based on the actual type used at the call site. The code stays short because one definition covers the places that need clamping, and it stays consistent because every use routes through the same rule.
 
 ---
 
-## `std::span` for non-owning views of contiguous data
+## `explicit` constructors
 
-`std::span` lets functions accept arrays/vectors without taking ownership or copying. It also carries the size, so it is safer than raw pointers.
-
-```cpp
-[[nodiscard]] inline VecX computeResiduals(
-    const VecX& p,
-    const Eigen::Ref<const MatX>& objectPts,
-    std::span<const MatX> imagePts) { /* ... */ }
-```
+The timer helper uses `explicit ScopedTimer(std::string_view n)`. “Explicit” means the compiler refuses to create a `ScopedTimer` object implicitly from a single value. In this file, timers are created intentionally to measure certain blocks, and the explicit rule prevents accidental timer creation when a function expects a timer object and a string-like value happens to be passed.
 
 ---
 
-## `std::array` for fixed-size stage schedules
+## Destructors `~Type()` at scope end
 
-The pipeline has exactly three phases (no distortion → radial → tangential). `std::array` expresses that fixed design and avoids heap allocation.
-
-```cpp
-const std::array<ActiveMask,3> stages { stage0, stage1, stage2 };
-const std::array<int,3> iters { 30, 40, 60 };
-```
+The timer class has a destructor `~ScopedTimer()` that runs automatically when the timer object leaves its scope. In the file, a timer is created at the beginning of a block and then, at the end of the block, the destructor prints how long the work took. This keeps the timing output reliable even when the function returns early or an error path is taken, because the cleanup step still runs when the scope closes.
 
 ---
 
-## Lambdas for local helper logic
+## `std::string_view` for passing text
 
-Small “local” behavior is expressed via lambdas rather than creating extra helper functions and polluting namespace scope. The capture `[&]` is used where the lambda depends on local variables.
-
-```cpp
-const auto recompute = [&]() {
-  // uses B11..B33 from enclosing scope
-  return Intrinsics{alpha, beta, u0, v0, gamma};
-};
-
-auto makeMask = [&](const std::vector<int>& idxOn) {
-  ActiveMask m(static_cast<std::size_t>(P), 0);
-  for (const int idx : idxOn) m.at(static_cast<std::size_t>(idx)) = 1;
-  return m;
-};
-```
+The timer stores its label as `std::string_view` and receives it through `ScopedTimer(std::string_view n)`. In the file, the label is passed in as a string-like value, and the timer keeps a lightweight “view” of that text for printing later. This avoids extra copying of text while still allowing readable names to appear in the timing output.
 
 ---
 
-## Move semantics with `std::move`
+## `auto` type deduction
 
-When a candidate update is accepted, the code moves it into place to avoid copying large Eigen vectors/matrices. This is particularly helpful inside iterative optimizers.
-
-```cpp
-if (costNew < cost) {
-  p = std::move(pNew);
-  lambda = std::max(opt.minLambda, lambda * opt.lambdaDown);
-}
-```
-
-And in synthetic data creation:
-
-```cpp
-MatX obs(N,2);
-/* fill obs */
-data.imagePts[v] = std::move(obs);
-```
+The code uses `auto` for local variables when the compiler can figure out the type from the right-hand side, such as `const auto dt = ...;`, `const auto recompute = [&]() { ... };`, and `auto makeMask = ...;`. In each case, the initializer expression fully determines the type, and the variable is then used normally in later statements. This keeps the file from being dominated by long type names, which helps the reader focus on the calibration steps and data flow.
 
 ---
 
-## Exceptions for fail-fast validation
+## `const` for “do not change”
 
-The code uses `throw std::runtime_error(...)` where wrong dimensions would lead to silent numerical corruption. This is a practical way to prevent “garbage in, garbage out.”
-
-```cpp
-if (planarXY.rows() != imageUV.rows()) throw std::runtime_error("homographyDLT: row mismatch");
-if (planarXY.rows() < 4) throw std::runtime_error("homographyDLT: need >= 4 points");
-```
+Many values are declared `const`, such as `const double theta = ...;` and `const SyntheticConfig cfg{};`. Once set, those names cannot be assigned again in that scope. In a numeric pipeline where later expressions depend on earlier results, this reduces accidental edits and makes it easier to trust that a value stays the same across the rest of its block.
 
 ---
 
-## Explicit casts with `static_cast`
+## References `&` in parameters
 
-Size types differ across APIs (`size_t`, `ptrdiff_t`, `int`). The code uses explicit casts to avoid implicit narrowing and to be clear about intent.
-
-```cpp
-const int M = static_cast<int>(imagePts.size());
-const std::ptrdiff_t N = pts.rows();
-```
+Functions accept large inputs using references, for example `const MatX& A`, `const VecX& b`, and `const Intrinsics& intr`. That means the function reads from an existing object instead of making a full copy. In this calibration code, matrices can be large and are passed through many helper functions; references keep the program responsive and avoid unnecessary duplication of large data.
 
 ---
 
-## `constexpr` layout indices as a single source of truth
+## Optional results `std::optional<T>`
 
-All offsets into the parameter vector are centralized in `ParamLayout`. This removes magic numbers and makes packing/unpacking consistent.
-
-```cpp
-struct ParamLayout final {
-  static constexpr int idx_fx = 0;
-  static constexpr int idx_fy = 1;
-  static constexpr int idx_cx = 2;
-  static constexpr int idx_cy = 3;
-
-  static constexpr int idx_k1 = 4;
-  static constexpr int idx_k2 = 5;
-  static constexpr int idx_p1 = 6;
-  static constexpr int idx_p2 = 7;
-
-  [[nodiscard]] static constexpr int poseBase(int viewIdx) noexcept {
-    return kHeaderCount + kPoseCount * viewIdx;
-  }
-};
-```
+The solver helper returns `std::optional<VecX>` from `trySolveLDLT(...)`, enabled by `#include <optional>`. In the file, the solver attempts a method, and the return type allows the function to either carry a real solution vector or carry “no solution available.” The calling code can then check whether a solution exists before trying to use it, which keeps failure handling clear and avoids pretending a missing solution is a real numeric output.
 
 ---
 
-## Eigen `Ref` to avoid copies while accepting matrix expressions
+## Empty optional state `std::nullopt`
 
-`Eigen::Ref<const MatX>` allows passing matrices (and compatible expressions) efficiently without copying them. The function still sees a matrix-like object with stable access.
+When the LDLT factorization reports failure, the solver returns `std::nullopt`. That is the standard “empty state” value paired with `std::optional`. In this file, returning an explicit empty state makes it clear that there is nothing to use from that attempt, and it nudges the caller into taking the fallback path instead of continuing with an invalid vector.
 
-```cpp
-[[nodiscard]] inline Normalization2D normalize2D(const Eigen::Ref<const MatX>& pts) {
-  if (pts.cols() != 2) throw std::runtime_error("normalize2D: expected Nx2 matrix");
-  /* ... */
-}
-```
+---
+
+## Non-owning array views `std::span<T>`
+
+Several functions accept “views” of contiguous collections using `std::span`, for example `intrinsicsFromHomographies(std::span<const Mat3> Hs)` and `computeResiduals(..., std::span<const MatX> imagePts)`, enabled by `#include <span>`. In the code, the underlying data is stored in containers like `std::vector`, and the span lets the function see the data plus its length without taking ownership. This keeps data passing lightweight and makes it easier to reuse the same functions with data stored in different containers.
+
+---
+
+## Lambdas `[...] { ... }`
+
+The file creates small in-place callable blocks such as `const auto recompute = [&]() { ... };` and `const auto randn = [&]() { return n01(rng); };`. These behave like small local functions that live right next to where they are needed. In this calibration pipeline, that keeps short helper behavior close to the loop or routine that uses it, so the reader does not have to jump across the file to understand what is being repeated.
+
+---
+
+## Lambda capture `[&]`
+
+Those same lambdas use `[&]`, meaning they can directly read and write variables that are already in the surrounding scope. For example, the recomputation helper can access the current parameter vector and intermediate matrices without threading a long list of arguments through every call. This keeps local helper calls compact while still working with the same live data as the surrounding block.
+
+---
+
+## Structured bindings `auto [a, b] = ...`
+
+Near the end, the code unpacks a two-part return using `auto [rFinal, rmse] = residualsAndRmse(...);`. The called function returns two related values together, and structured binding immediately gives each part its own name. This keeps the end-of-run reporting straightforward, because the final residual vector and the final error number can be used directly without manual indexing or extra temporary objects.
+
+---
+
+## Move transfer `std::move`
+
+When the synthetic observations matrix is placed into the per-view container, the file uses `data.imagePts[v] = std::move(obs);`, enabled by `#include <utility>`. That signals “transfer the contents” rather than “copy everything.” In a loop that creates many matrices, moving keeps the program from repeatedly duplicating large buffers, which helps the run stay fast and memory usage stay controlled.
+
+---
+
+## Conditional operator `?:`
+
+The code uses the compact chooser operator `?:` in numeric safety checks, for example when computing `z` during projection so extremely small depth values do not cause unstable division. In practice, this is a short “if this condition holds, use this value, otherwise use that value” expression. It keeps the projection logic tight while still protecting later calculations from edge cases that would otherwise blow up.
+
+---
+
+## Exceptions with `throw std::runtime_error(...)`
+
+When inputs violate basic expectations, the file throws errors such as `throw std::runtime_error("...")`, supported by `#include <stdexcept>`. This appears in places where the code cannot proceed sensibly, such as invalid shapes or insufficient data for a computation. The program stops immediately with a clear message, which prevents later steps from producing misleading numbers based on broken assumptions.
+
+---
+
+## Returning two values with `std::pair<...>`
+
+The function `residualsAndRmse(...)` returns `std::pair<VecX, double>`, enabled by `#include <utility>`. In the file, the two values come from the same evaluation step: the full list of errors and a single summary score derived from them. Returning them together keeps them synchronized, and the calling code can treat them as a matched set for reporting.
+
+---
+
+## Compile-time constants `constexpr`
+
+The parameter layout helper defines fixed counts and index positions using `constexpr`. These numbers describe where each camera parameter lives inside the single long parameter vector the optimizer updates. Because these values are fixed and used many times across packing and unpacking, treating them as compile-time constants keeps the indexing consistent throughout the calibration run.
+
+---
+
+## Single shared values `static`
+
+Those layout values are also declared with `static`, which means there is one shared copy tied to the type rather than one copy per object instance. In this file, the layout is used as a central map for parameter positions, and it would be wasteful and confusing for every object to carry its own duplicate copy. Keeping them shared reinforces that these numbers describe a universal arrangement used across the program.
