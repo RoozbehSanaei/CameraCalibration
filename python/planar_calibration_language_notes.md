@@ -1,5 +1,5 @@
 ## Postponed type hints (`from __future__ import annotations`)
-- The file begins with `from __future__ import annotations`, which tells Python to store type hints in a “later” form when it creates functions and classes, instead of trying to fully resolve every name in the type hints immediately.  
+- The file includes `from __future__ import annotations` near the top (after the module docstring), which tells Python to store type hints in a “later” form when it creates functions and classes, instead of trying to fully resolve every name in the type hints immediately.  
 - In this code, many functions and classes include type hints (for example, hints for inputs and outputs), and some hinted names are introduced later in the file; with this setting, Python can still build those functions and classes first and keep the hints as attached notes.  
 - Overall benefit: the program can keep clear type notes without Python tripping over type-hint names that appear later in the file.
 
@@ -30,7 +30,7 @@
 
 ## Abstract “ordered collection” type (`Sequence`)
 - The code imports it via `from collections.abc import Sequence`, then uses it in function annotations to describe inputs that act like an ordered list of items.  
-- In this file, a function that accepts argument tokens is annotated with `Sequence[str]` to show it expects something that can be iterated and treated like an ordered group of strings.  
+- In this file, a function that accepts argument tokens is annotated with `Sequence[str] | None` to show it expects something that can be iterated and treated like an ordered group of strings.  
 - Overall benefit: the code’s expectations about “what kind of container comes in” are clearer to readers.
 
 ## “Either/or” type hints (`|` in annotations)
@@ -40,7 +40,7 @@
 
 ## Computed attribute wrapper (`@property`)
 - The code uses `@property` on a method in the intrinsics class so that later access looks like a field read, even though it runs a function.  
-- In this file, reading something like `intr.K` triggers Python’s attribute lookup to call the property’s getter, which builds and returns the camera matrix from stored numeric fields.  
+- In this file, reading something like `K.K` triggers Python’s attribute lookup to call the property’s getter, which builds and returns the camera matrix from stored numeric fields.  
 - Overall benefit: the rest of the code can use a clean “field-like” access pattern for values that are actually computed.
 
 ## Formatted strings (f-strings)
