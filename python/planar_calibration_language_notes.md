@@ -1,171 +1,104 @@
-## `#include` headers
-
-In the first lines, the file pulls in outside building blocks with statements like `#include <Eigen/Dense>` and `#include <vector>`. After those lines, the rest of the file can name things such as `Eigen::MatrixXd` and `std::vector<Extrinsics>` because the compiler has already been shown what those names mean. This keeps the file readable because it does not need to re-declare large chunks of functionality, and it keeps compilation stable because the dependencies are declared upfront.
-
----
-
-## `namespace` blocks
-
-The implementation is wrapped inside `namespace calib { ... }`, so every type and function declared there belongs to a named “group.” When the program later refers to items from this file, they live under `calib::` rather than mixing into the global set of names shared by everything else in a project. This keeps naming conflicts rare when multiple files define similar words like `Intrinsics` or `projectPoint`, and it makes it clearer which parts belong to this module.
-
----
-
-## `using namespace` directive
-
-Inside `main()`, the line `using namespace calib;` allows the code to write names like `SyntheticConfig` and `Intrinsics` without prefixing them with `calib::` each time. The compiler still knows exactly which names are meant because the directive tells it to also look inside the `calib` group during name lookup in that scope. This keeps the main routine easier to scan because the focus stays on the run flow rather than repeated prefixes.
-
----
-
-## `using` type aliases
-
-Near the top, the code defines shorter type names with declarations like `using Mat3 = Eigen::Matrix3d;` and `using VecX = Eigen::VectorXd;`. After that, the code can declare variables and parameters using `Mat3` and `VecX` while still referring to the same underlying Eigen types. This keeps many function signatures and local variables compact, which makes long numeric expressions easier to follow.
-
----
-
-## `struct` as a plain data record
-
-The file uses `struct Intrinsics final { ... };`, `struct Distortion final { ... };`, and `struct Extrinsics final { ... };` to hold related values together. Later, functions accept and return these objects so the code can pass one “package” rather than many separate numbers. This reduces the risk of mixing up values such as `cx` and `cy`, because the names travel together inside a single object.
-
----
-
-## `final` for fixed-purpose types
-
-Those same record types are marked with `final`, as in `struct Intrinsics final`. That tells the language that nobody should build a derived type that extends it through inheritance. In this file, these types act like fixed-format containers for calibration parameters, so keeping them non-extendable helps them remain predictable and avoids surprising extra behavior from subclassing.
-
----
-
-## Brace initialization `{}`
-
-The code frequently initializes values using braces, such as member defaults like `double fx {0.0};` and object creation like `const SyntheticConfig cfg{};` and `const Intrinsics gtK{800.0, 820.0, ...};`. Braces give a clear “set these fields now” moment and produce a well-defined starting state. This keeps runs repeatable because every new object begins with known values instead of whatever happened to be in memory.
-
----
-
-## `[[nodiscard]]` attribute
-
-Several helper functions begin with `[[nodiscard]]`, such as the small math utilities and solver helpers. In practical terms, this asks the compiler to warn if the code calls that function and then throws away the result. In this calibration pipeline, a returned matrix, vector, or cost number is usually meant to drive the next step, so this extra check helps catch cases where a computed value is accidentally ignored and the program continues with stale state.
-
----
-
-## `inline` on function definitions
-
-Many of the small helpers are declared with `inline`, for example `inline double sqr(...)` and other short functions. This changes how the compiler treats repeated definitions across translation units if the code is later moved into a header-style layout. It also signals that the function body is intended to be lightweight and used often. The file stays organized with small, reusable helpers without forcing separate compilation units for each one.
-
----
-
-## `noexcept` for “no exception” functions
-
-Some functions end with `noexcept`, for example `inline double sqr(...) noexcept` and rotation helpers like `Mat3 rodriguesToR(...) noexcept`. That is a promise: if an exception tries to escape from that function, the program treats it as a serious violation. In this code, these functions are pure numeric transforms; keeping them in a “no surprise exits” category makes the overall flow steadier, especially inside tight loops.
-
----
-
-## `template <typename T>` function template
-
-The file defines a generic clamp helper using `template <typename T>` and then calls it in places like `cos_theta = clamp(cos_theta, -1.0, 1.0);`. This means the compiler produces a concrete version of `clamp` based on the actual type used at the call site. The code stays short because one definition covers the places that need clamping, and it stays consistent because every use routes through the same rule.
-
----
-
-## `explicit` constructors
-
-The timer helper uses `explicit ScopedTimer(std::string_view n)`. “Explicit” means the compiler refuses to create a `ScopedTimer` object implicitly from a single value. In this file, timers are created intentionally to measure certain blocks, and the explicit rule prevents accidental timer creation when a function expects a timer object and a string-like value happens to be passed.
-
----
-
-## Destructors `~Type()` at scope end
-
-The timer class has a destructor `~ScopedTimer()` that runs automatically when the timer object leaves its scope. In the file, a timer is created at the beginning of a block and then, at the end of the block, the destructor prints how long the work took. This keeps the timing output reliable even when the function returns early or an error path is taken, because the cleanup step still runs when the scope closes.
-
----
-
-## `std::string_view` for passing text
-
-The timer stores its label as `std::string_view` and receives it through `ScopedTimer(std::string_view n)`. In the file, the label is passed in as a string-like value, and the timer keeps a lightweight “view” of that text for printing later. This avoids extra copying of text while still allowing readable names to appear in the timing output.
-
----
-
-## `auto` type deduction
-
-The code uses `auto` for local variables when the compiler can figure out the type from the right-hand side, such as `const auto dt = ...;`, `const auto recompute = [&]() { ... };`, and `auto makeMask = ...;`. In each case, the initializer expression fully determines the type, and the variable is then used normally in later statements. This keeps the file from being dominated by long type names, which helps the reader focus on the calibration steps and data flow.
-
----
-
-## `const` for “do not change”
-
-Many values are declared `const`, such as `const double theta = ...;` and `const SyntheticConfig cfg{};`. Once set, those names cannot be assigned again in that scope. In a numeric pipeline where later expressions depend on earlier results, this reduces accidental edits and makes it easier to trust that a value stays the same across the rest of its block.
-
----
-
-## References `&` in parameters
-
-Functions accept large inputs using references, for example `const MatX& A`, `const VecX& b`, and `const Intrinsics& intr`. That means the function reads from an existing object instead of making a full copy. In this calibration code, matrices can be large and are passed through many helper functions; references keep the program responsive and avoid unnecessary duplication of large data.
-
----
-
-## Optional results `std::optional<T>`
-
-The solver helper returns `std::optional<VecX>` from `trySolveLDLT(...)`, enabled by `#include <optional>`. In the file, the solver attempts a method, and the return type allows the function to either carry a real solution vector or carry “no solution available.” The calling code can then check whether a solution exists before trying to use it, which keeps failure handling clear and avoids pretending a missing solution is a real numeric output.
-
----
-
-## Empty optional state `std::nullopt`
-
-When the LDLT factorization reports failure, the solver returns `std::nullopt`. That is the standard “empty state” value paired with `std::optional`. In this file, returning an explicit empty state makes it clear that there is nothing to use from that attempt, and it nudges the caller into taking the fallback path instead of continuing with an invalid vector.
-
----
-
-## Non-owning array views `std::span<T>`
-
-Several functions accept “views” of contiguous collections using `std::span`, for example `intrinsicsFromHomographies(std::span<const Mat3> Hs)` and `computeResiduals(..., std::span<const MatX> imagePts)`, enabled by `#include <span>`. In the code, the underlying data is stored in containers like `std::vector`, and the span lets the function see the data plus its length without taking ownership. This keeps data passing lightweight and makes it easier to reuse the same functions with data stored in different containers.
-
----
-
-## Lambdas `[...] { ... }`
-
-The file creates small in-place callable blocks such as `const auto recompute = [&]() { ... };` and `const auto randn = [&]() { return n01(rng); };`. These behave like small local functions that live right next to where they are needed. In this calibration pipeline, that keeps short helper behavior close to the loop or routine that uses it, so the reader does not have to jump across the file to understand what is being repeated.
-
----
-
-## Lambda capture `[&]`
-
-Those same lambdas use `[&]`, meaning they can directly read and write variables that are already in the surrounding scope. For example, the recomputation helper can access the current parameter vector and intermediate matrices without threading a long list of arguments through every call. This keeps local helper calls compact while still working with the same live data as the surrounding block.
-
----
-
-## Structured bindings `auto [a, b] = ...`
-
-Near the end, the code unpacks a two-part return using `auto [rFinal, rmse] = residualsAndRmse(...);`. The called function returns two related values together, and structured binding immediately gives each part its own name. This keeps the end-of-run reporting straightforward, because the final residual vector and the final error number can be used directly without manual indexing or extra temporary objects.
-
----
-
-## Move transfer `std::move`
-
-When the synthetic observations matrix is placed into the per-view container, the file uses `data.imagePts[v] = std::move(obs);`, enabled by `#include <utility>`. That signals “transfer the contents” rather than “copy everything.” In a loop that creates many matrices, moving keeps the program from repeatedly duplicating large buffers, which helps the run stay fast and memory usage stay controlled.
-
----
-
-## Conditional operator `?:`
-
-The code uses the compact chooser operator `?:` in numeric safety checks, for example when computing `z` during projection so extremely small depth values do not cause unstable division. In practice, this is a short “if this condition holds, use this value, otherwise use that value” expression. It keeps the projection logic tight while still protecting later calculations from edge cases that would otherwise blow up.
-
----
-
-## Exceptions with `throw std::runtime_error(...)`
-
-When inputs violate basic expectations, the file throws errors such as `throw std::runtime_error("...")`, supported by `#include <stdexcept>`. This appears in places where the code cannot proceed sensibly, such as invalid shapes or insufficient data for a computation. The program stops immediately with a clear message, which prevents later steps from producing misleading numbers based on broken assumptions.
-
----
-
-## Returning two values with `std::pair<...>`
-
-The function `residualsAndRmse(...)` returns `std::pair<VecX, double>`, enabled by `#include <utility>`. In the file, the two values come from the same evaluation step: the full list of errors and a single summary score derived from them. Returning them together keeps them synchronized, and the calling code can treat them as a matched set for reporting.
-
----
-
-## Compile-time constants `constexpr`
-
-The parameter layout helper defines fixed counts and index positions using `constexpr`. These numbers describe where each camera parameter lives inside the single long parameter vector the optimizer updates. Because these values are fixed and used many times across packing and unpacking, treating them as compile-time constants keeps the indexing consistent throughout the calibration run.
-
----
-
-## Single shared values `static`
-
-Those layout values are also declared with `static`, which means there is one shared copy tied to the type rather than one copy per object instance. In this file, the layout is used as a central map for parameter positions, and it would be wasteful and confusing for every object to carry its own duplicate copy. Keeping them shared reinforces that these numbers describe a universal arrangement used across the program.
+## Postponed type hints (`from __future__ import annotations`)
+- The file begins with `from __future__ import annotations`, which tells Python to store type hints in a “later” form when it creates functions and classes, instead of trying to fully resolve every name in the type hints immediately.  
+- In this code, many functions and classes include type hints (for example, hints for inputs and outputs), and some hinted names are introduced later in the file; with this setting, Python can still build those functions and classes first and keep the hints as attached notes.  
+- Overall benefit: the program can keep clear type notes without Python tripping over type-hint names that appear later in the file.
+
+## Type-alias marker (`TypeAlias`)
+- The code brings in the marker with `from typing import TypeAlias`, then uses it in lines like `Vec: TypeAlias = np.ndarray` so Python binds `Vec` to the same thing as `np.ndarray` at runtime.  
+- In the rest of the file, names like `Vec` and `Mat` are used in type hints; Python treats them as normal names, while tools that read type hints can also see that these names were intended to represent “type names.”  
+- Overall benefit: the code can use short, consistent names in type hints while still pointing to the same underlying runtime objects.
+
+## “Do not reassign” marker (`Final`)
+- The code imports the marker using `from typing import Final`, and then places it in type-hint positions to mark certain names as intended to stay unchanged.  
+- Python still treats the value as an ordinary variable at runtime, meaning nothing stops reassignment unless the code itself forbids it; the “final” meaning is stored as metadata that other tools can read.  
+- Overall benefit: readers and type-checking tools can understand which names are meant to behave like constants.
+
+## Dataclass decorator (`@dataclass(...)`)
+- The file imports the decorator with `from dataclasses import dataclass`, then places `@dataclass(...)` above classes so Python first creates the class and then runs the decorator on that class object.  
+- In this code, the decorator reads the field definitions from the class’s type hints and auto-creates common methods (especially the constructor), which is why the program can create instances by calling the class with field values.  
+- Overall benefit: the classes that hold calibration parameters can be defined with far less boilerplate.
+
+## Dataclass immutability switch (`frozen=True`)
+- The code passes `frozen=True` inside `@dataclass(frozen=True, ...)`, which changes how Python handles attribute setting on instances after they are created.  
+- In this file, once an instance holding parameters is built, later code can read fields, yet normal assignments to those fields are blocked by the object’s attribute-setting rules that dataclasses install.  
+- Overall benefit: the parameter objects behave more like “fixed records,” which reduces accidental edits while the program runs.
+
+## Dataclass slot storage (`slots=True`)
+- The code passes `slots=True` inside `@dataclass(..., slots=True)`, which changes how Python stores fields inside each instance.  
+- In this file, instances store a fixed set of named fields using a slot-based layout rather than a per-instance attribute dictionary, so attribute access is handled through those fixed slots.  
+- Overall benefit: instances become more constrained in what attributes they can hold, which reduces accidental “new attribute” mistakes.
+
+## Abstract “ordered collection” type (`Sequence`)
+- The code imports it via `from collections.abc import Sequence`, then uses it in function annotations to describe inputs that act like an ordered list of items.  
+- In this file, a function that accepts argument tokens is annotated with `Sequence[str]` to show it expects something that can be iterated and treated like an ordered group of strings.  
+- Overall benefit: the code’s expectations about “what kind of container comes in” are clearer to readers.
+
+## “Either/or” type hints (`|` in annotations)
+- The code uses the `|` symbol in type hints (for example, `Sequence[str] | None`) to record “this can be one thing or another” in the annotation metadata.  
+- In this file, parameters that may be omitted are annotated this way, and the runtime behavior still depends on regular checks for `None`; the `|` form just records that intent in the function’s attached type notes.  
+- Overall benefit: the type hints match the code path that handles “provided value” versus “missing value.”
+
+## Computed attribute wrapper (`@property`)
+- The code uses `@property` on a method in the intrinsics class so that later access looks like a field read, even though it runs a function.  
+- In this file, reading something like `intr.K` triggers Python’s attribute lookup to call the property’s getter, which builds and returns the camera matrix from stored numeric fields.  
+- Overall benefit: the rest of the code can use a clean “field-like” access pattern for values that are actually computed.
+
+## Formatted strings (f-strings)
+- The code builds readable output using f-strings, which are strings that contain embedded expressions inside `{...}` that Python evaluates at runtime.  
+- In this file, when results are printed or logged, Python evaluates the expressions inside the f-string, applies formatting rules like fixed decimal places, and then produces a normal final string.  
+- Overall benefit: numeric results are turned into consistent, human-readable text without manual string building.
+
+## Assign-and-use in one expression (`:=`)
+- The code uses `:=` so Python can compute a value, store it in a name, and also use it immediately in a condition.  
+- In this file, a computed number (such as a size or “amount” value) is saved into a variable during an `if` test, and the same computed value is used right away for the comparison.  
+- Overall benefit: the code avoids computing the same value twice while still keeping the logic in one place.
+
+## Paired iteration (`zip(..., strict=True)`)
+- The code uses `zip(..., strict=True)` to iterate over two same-length sequences side by side, where Python pulls one item from each sequence per step.  
+- In this file, the strict setting means Python checks that both sequences end together; if one sequence is longer, iteration raises an error instead of silently stopping early.  
+- Overall benefit: mismatched paired data is caught immediately during the loop rather than producing partial, misleading processing.
+
+## Counting while looping (`enumerate(...)`)
+- The code uses `enumerate(...)`, where Python wraps an iterator and adds an internal counter that starts at zero by default.  
+- In this file, when iterating over multiple “views,” the loop receives both the view index and the view data in each iteration step, without manual counter code.  
+- Overall benefit: the loop gets an index in a clean way, reducing bookkeeping mistakes.
+
+## List comprehension (`[ ... for ... ]`)
+- The code uses a list comprehension to build a list in one expression, where Python internally runs loops and appends each produced element to a new list.  
+- In this file, it generates a grid of planar points by looping over two ranges and producing a pair of coordinates for each grid position, then later turns that list into a NumPy array.  
+- Overall benefit: the “build a list from a loop” pattern is compact and easy to follow once you know the form.
+
+## Generator expression with `next(...)`)
+- The code uses a generator expression inside `next(...)`, where Python creates a “produce items one at a time” object rather than building a full list.  
+- In this file, `next(...)` pulls just the first item that matches a condition, and if nothing matches, it returns a default value instead of failing.  
+- Overall benefit: the code can “find the first match” without creating extra intermediate containers.
+
+## Exception handling (`try` / `except`)
+- The code uses `try: ... except ...:` so Python can attempt an operation and, if a named error occurs, jump to a fallback path.  
+- In this file, a linear-algebra operation may fail for certain inputs; when it raises the specific error, Python transfers control to the `except` block where an alternative routine is run.  
+- Overall benefit: the program can keep running and produce a result even when a particular calculation path fails.
+
+## Matrix multiply operator (`@`)
+- The code uses the `@` operator, which Python treats as a special “matrix multiplication” operation by calling the object’s internal matrix-multiply method.  
+- In this file, arrays are combined with `@` to apply transforms and produce new point arrays, and the heavy numerical work is performed by the array library’s implementation behind that operator.  
+- Overall benefit: the math reads like “matrix times matrix,” which keeps the transformation steps clear.
+
+## Range slicing that keeps a dimension (`2:3` slicing)
+- The code uses slicing like `2:3` in array indexing, where Python creates a “slice object” and passes it into the array’s indexing logic.  
+- In this file, choosing `2:3` (a one-step range) keeps that axis as a one-wide dimension, which affects how later division spreads across columns when the program normalizes coordinates.  
+- Overall benefit: the code controls array shapes in a predictable way during calculations.
+
+## Import aliasing (`import numpy as np`)
+- The file uses `import numpy as np`, where Python loads the module and binds it to the short name `np` in this file.  
+- In this code, later references like `np.array(...)` and `np.linalg...` are regular attribute lookups on that bound module name, which is how the program reaches array creation and math routines.  
+- Overall benefit: the code stays readable and consistent by using a short, standard module name.
+
+## Script entry check (`if __name__ == "__main__":`)
+- The file ends with `if __name__ == "__main__":`, where Python uses the special name `__name__` to know whether the file is being run directly or imported.  
+- In this code, when run directly, Python executes the block and calls `main()` to run the test pipeline; when imported, Python skips that block while still providing the functions and classes.  
+- Overall benefit: the same file can act as both a reusable module and a runnable program.
+
+## Logging setup and use (`import logging`, `logging.basicConfig(...)`, `logging.getLogger(...)`)
+- The code imports logging with `import logging`, configures it once using `logging.basicConfig(...)`, then obtains a logger via `logging.getLogger(...)` and uses it for messages.  
+- In this file, each log call causes Python to create a “message record” and pass it through the configured output rules so it prints in a consistent format and level.  
+- Overall benefit: status messages are handled in a structured way rather than scattered, inconsistent prints.
