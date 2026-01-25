@@ -1,0 +1,409 @@
+
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{mathtools}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\title{Planar Camera Calibration}
+\author{}
+\date{}
+
+\begin{document}
+	\maketitle
+	
+	\section{Starting material}
+	
+	\subsection*{Known geometry}
+	A planar calibration target provides a set of points whose coordinates are known in the target's own coordinate system. The model treats the target as a flat surface, so each point has a zero height coordinate. For point index $i\in\{1,\dots,N\}$,
+	\begin{equation}
+		\mathbf{X}_i=\begin{bmatrix}X_i\\Y_i\\0\end{bmatrix}.
+		\label{eq:plane_lift}
+	\end{equation}
+	The pair $(X_i,Y_i)$ are planar coordinates on the target. Any consistent unit system can be used. Units affect the numerical scale of translations and the implied scene scale, while leaving the structure of the calibration equations unchanged.
+	
+	Two representations appear because different stages consume different forms. The planar coordinates $(X_i,Y_i)$ are used when estimating a planar projective mapping. The lifted 3D points in \eqref{eq:plane_lift} are used when predicting pixels through the full camera model.
+	
+	\subsection*{Observations per view}
+	For each view $v\in\{1,\dots,M\}$, the measured image location of point $i$ is recorded in pixels:
+	\begin{equation}
+		\mathbf{u}_{v,i}=\begin{bmatrix}u_{v,i}\\v_{v,i}\end{bmatrix}.
+		\label{eq:meas_uv}
+	\end{equation}
+	These are the quantities the calibration procedure tries to reproduce. A successful calibration is one where a camera model can predict pixel locations that closely match the measured pixels across all views and points.
+	
+	\subsection*{Parameters to estimate}
+	Three parameter groups are estimated.
+	
+	\paragraph{Shared intrinsics.}
+	The camera's intrinsic scalars are the focal scalings $(f_x,f_y)$ and the principal point $(c_x,c_y)$. Skew is fixed to $s=0$, which matches typical sensors where pixel axes are orthogonal.
+	
+	\paragraph{Shared distortion.}
+	Distortion parameters are shared across views because the lens does not change between images. The model uses two radial coefficients $(k_1,k_2)$ and two tangential coefficients $(p_1,p_2)$.
+	
+	\paragraph{Per-view pose.}
+	Each view has a rigid transform from the target frame to the camera frame, represented by a rotation vector $\boldsymbol{\omega}_v\in\mathbb{R}^3$ and translation $\mathbf{t}_v\in\mathbb{R}^3$.
+	
+	\section{What you get back}
+	
+	\subsection*{The intrinsic matrix}
+	The intrinsic matrix is constructed from the shared scalars:
+	\begin{equation}
+		\mathbf{K}=
+		\begin{bmatrix}
+			f_x & s & c_x\\
+			0 & f_y & c_y\\
+			0 & 0 & 1
+		\end{bmatrix},
+		\qquad s=0.
+		\label{eq:K}
+	\end{equation}
+	This matrix maps normalized direction ratios into pixel coordinates. The focal scalings turn unitless normalized coordinates into pixel distances. The principal point shifts the origin from the corner-based image coordinate system to the optical axis intersection.
+	
+	\subsection*{Distortion}
+	Distortion is returned as $(k_1,k_2,p_1,p_2)$, where $(k_1,k_2)$ shape radially symmetric warping and $(p_1,p_2)$ capture asymmetric tangential effects.
+	
+	\subsection*{Pose per view}
+	For each view $v$, the returned pose is $(\boldsymbol{\omega}_v,\mathbf{t}_v)$. The rotation vector is a compact rotation representation used by the implementation, while the underlying rotation matrix appears inside the projection equations.
+	
+	\subsection*{A pixel-domain score}
+	A standard summary is the reprojection root-mean-square error (RMSE):
+	\begin{equation}
+		\operatorname{RMSE}=
+		\sqrt{
+			\frac{1}{MN}\sum_{v=1}^{M}\sum_{i=1}^{N}
+			\left\lVert \mathbf{u}_{v,i}-\hat{\mathbf{u}}_{v,i}\right\rVert_2^2
+		}.
+		\label{eq:rmse}
+	\end{equation}
+	This value is expressed in pixels. It can be read as the typical distance between a measured corner and its predicted location.
+	
+	\section{A flow sketch}
+	
+	\subsection*{Pseudocode stages}
+	The procedure is organized as four stages. Each stage consumes outputs from earlier stages, and each stage is designed to be as stable as possible for the role it plays.
+	
+	\paragraph{(1) Plane-to-image maps.}
+	For each view $v$, estimate a planar projective map $\mathbf{H}_v$ from planar coordinates $(X_i,Y_i)$ and measured pixels $\mathbf{u}_{v,i}$.
+	\[
+	\text{Inputs: planar points and pixels}\quad\rightarrow\quad \text{Output: }\mathbf{H}_v.
+	\]
+	The collection $\{\mathbf{H}_v\}_{v=1}^M$ is consumed by stages (2) and (3).
+	
+	\paragraph{(2) Intrinsic seed.}
+	Use all homographies $\{\mathbf{H}_v\}$ to solve for an initial intrinsic estimate $\mathbf{K}_0$.
+	\[
+	\text{Inputs: }\{\mathbf{H}_v\}\text{ (from stage (1))}\quad\rightarrow\quad \text{Output: }\mathbf{K}_0.
+	\]
+	This seed is consumed by stages (3) and (4).
+	
+	\paragraph{(3) Pose seed per view.}
+	For each view, combine $\mathbf{K}_0$ and $\mathbf{H}_v$ to obtain an initial pose $(\boldsymbol{\omega}_v,\mathbf{t}_v)$.
+	\[
+	\text{Inputs: }\mathbf{K}_0\text{ (from stage (2)), }\mathbf{H}_v\text{ (from stage (1))}\quad\rightarrow\quad \text{Output: pose seed}.
+	\]
+	These pose seeds are consumed by stage (4).
+	
+	\paragraph{(4) Reprojection refinement.}
+	Optimize intrinsics, distortion, and all poses by minimizing reprojection residuals in pixels using staged Levenberg--Marquardt.
+	\[
+	\text{Inputs: measurements and seeds (from stages (2)--(3))}\quad\rightarrow\quad \text{Outputs: refined parameters}.
+	\]
+	
+	\section{Core mapping equations}
+	
+	\subsection*{Rigid motion into camera coordinates}
+	For view $v$, a target point $\mathbf{X}$ is transformed into the camera coordinate system:
+	\begin{equation}
+		\mathbf{X}_{c}= \mathbf{R}(\boldsymbol{\omega}_v)\,\mathbf{X} + \mathbf{t}_v,
+		\label{eq:rigid}
+	\end{equation}
+	where $\mathbf{R}(\boldsymbol{\omega}_v)\in SO(3)$ is the rotation matrix corresponding to the rotation vector $\boldsymbol{\omega}_v$. This equation is the mathematical statement that pose is a rigid motion: rotation aligns axes and translation shifts the origin.
+	
+	\subsection*{Normalized perspective coordinates}
+	With $\mathbf{X}_c=[X_c,Y_c,Z_c]^T$, normalized coordinates are
+	\begin{equation}
+		x=\frac{X_c}{Z_c},\qquad y=\frac{Y_c}{Z_c}.
+		\label{eq:norm_xy}
+	\end{equation}
+	These ratios represent the direction of the 3D point relative to the camera, and they are the right space in which to apply a lens distortion model that depends on distance from the optical axis.
+	
+	\subsection*{Distortion in normalized space}
+	Define the squared radius
+	\begin{equation}
+		r^2 = x^2+y^2,\qquad r^4=(r^2)^2.
+		\label{eq:r2}
+	\end{equation}
+	Radial distortion is a radius-dependent scale factor:
+	\begin{equation}
+		\text{radial}(r)=1+k_1r^2+k_2r^4.
+		\label{eq:radial}
+	\end{equation}
+	Tangential distortion adds asymmetric corrections. The model used is
+	\begin{align}
+		x_d &= x\,\text{radial}(r) + 2p_1xy + p_2(r^2+2x^2), \label{eq:dist_x}\\
+		y_d &= y\,\text{radial}(r) + p_1(r^2+2y^2) + 2p_2xy. \label{eq:dist_y}
+	\end{align}
+	The structure of \eqref{eq:dist_x}--\eqref{eq:dist_y} is chosen so that distortion changes smoothly with radius while remaining low-order, which keeps the optimization problem well-behaved in typical calibration settings.
+	
+	\subsection*{Normalized to pixels}
+	The final step converts distorted normalized coordinates into pixel coordinates via intrinsics:
+	\begin{equation}
+		u = f_x x_d + c_x,\qquad v = f_y y_d + c_y.
+		\label{eq:pix_uv}
+	\end{equation}
+	This expresses that pixel coordinates are scaled versions of normalized direction ratios, shifted by the principal point.
+	
+	\subsection*{Rodrigues rotation map}
+	To compute $\mathbf{R}(\boldsymbol{\omega})$, let $\theta=\lVert\boldsymbol{\omega}\rVert$. For $\theta>0$, define the unit axis $\mathbf{k}=\boldsymbol{\omega}/\theta$ and its cross-product matrix
+	\[
+	[\mathbf{k}]_\times=
+	\begin{bmatrix}
+		0 & -k_z & k_y\\
+		k_z & 0 & -k_x\\
+		-k_y & k_x & 0
+	\end{bmatrix}.
+	\]
+	Rodrigues' formula is
+	\begin{equation}
+		\mathbf{R} = \mathbf{I} + \sin\theta\,[\mathbf{k}]_\times + (1-\cos\theta)\,[\mathbf{k}]_\times^2.
+		\label{eq:rodrigues}
+	\end{equation}
+	The inverse direction starts with the trace relation
+	\begin{equation}
+		\theta = \cos^{-1}\!\left(\frac{\operatorname{tr}(\mathbf{R})-1}{2}\right),
+		\label{eq:trace_theta}
+	\end{equation}
+	and recovers the axis from antisymmetric differences of $\mathbf{R}$.
+	
+	\section{Stage (1): plane-to-image maps}
+	
+	\subsection*{Homography model}
+	A planar point in homogeneous coordinates $\mathbf{x}=[X,Y,1]^T$ maps to an image point $\mathbf{u}=[u,v,1]^T$ through a $3\times 3$ homography:
+	\begin{equation}
+		\lambda \mathbf{u} = \mathbf{H}_v \mathbf{x}.
+		\label{eq:homog}
+	\end{equation}
+	The scalar $\lambda$ reflects projective equivalence: homogeneous vectors represent the same 2D point up to nonzero scale.
+	
+	\subsection*{Normalization for numerical stability}
+	Homography estimation is a linear least-squares problem in homogeneous form. Its numerical stability depends strongly on the coordinate scale. A similarity transform $\mathbf{T}$ is applied to both planar and image coordinates to center them and scale them so their mean distance to the origin is $\sqrt{2}$. Solving in this normalized space reduces imbalance in the linear system, which improves the reliability of the singular-vector solution used by DLT.
+	
+	\subsection*{DLT linear system}
+	Stacking $N$ correspondences produces
+	\begin{equation}
+		\mathbf{A}\mathbf{h}=0,
+		\label{eq:Ah0}
+	\end{equation}
+	where $\mathbf{h}$ stacks the 9 entries of $\mathbf{H}_v$. The DLT solution is
+	\begin{equation}
+		\mathbf{h}=\arg\min_{\|\mathbf{h}\|=1}\|\mathbf{A}\mathbf{h}\|,
+		\label{eq:dlt}
+	\end{equation}
+	given by the right singular vector of $\mathbf{A}$ associated with the smallest singular value. The normalized homography is denormalized by
+	\begin{equation}
+		\mathbf{H}_v = \mathbf{T}_{u}^{-1}\,\tilde{\mathbf{H}}_v\,\mathbf{T}_{x}.
+		\label{eq:denormH}
+	\end{equation}
+	
+	\section{Stage (2): intrinsic seed}
+	
+	\subsection*{Homography structure under a pinhole model}
+	Ignoring distortion during initialization, each homography decomposes as
+	\begin{equation}
+		\mathbf{H}_v \sim \mathbf{K}\,[\mathbf{r}_{1v}\ \mathbf{r}_{2v}\ \mathbf{t}_v],
+		\label{eq:Hdecomp}
+	\end{equation}
+	where $\mathbf{r}_{1v},\mathbf{r}_{2v}$ are the first two columns of a rotation matrix and $\mathbf{t}_v$ is translation. The symbol $\sim$ denotes equality up to a nonzero scale factor, which is inherent to homographies.
+	
+	\subsection*{Linear constraints in \texorpdfstring{$\mathbf{B}$}{B}}
+	Define
+	\begin{equation}
+		\mathbf{B}=\mathbf{K}^{-T}\mathbf{K}^{-1}.
+		\label{eq:B}
+	\end{equation}
+	Rotation columns are orthonormal, so
+	\begin{equation}
+		\mathbf{r}_{1v}^T\mathbf{r}_{2v}=0,\qquad
+		\mathbf{r}_{1v}^T\mathbf{r}_{1v}=\mathbf{r}_{2v}^T\mathbf{r}_{2v}.
+		\label{eq:rot_constraints}
+	\end{equation}
+	Substituting $\mathbf{r}_{iv}\propto \mathbf{K}^{-1}\mathbf{h}_{iv}$ converts \eqref{eq:rot_constraints} into constraints on homography columns:
+	\begin{equation}
+		\mathbf{h}_{1v}^T\mathbf{B}\mathbf{h}_{2v}=0,\qquad
+		\mathbf{h}_{1v}^T\mathbf{B}\mathbf{h}_{1v}=\mathbf{h}_{2v}^T\mathbf{B}\mathbf{h}_{2v}.
+		\label{eq:HB_constraints}
+	\end{equation}
+	Because $\mathbf{B}$ is symmetric, it has six unique entries. The constraints in \eqref{eq:HB_constraints} are linear in those six unknowns. Stacking all views yields
+	\begin{equation}
+		\mathbf{V}\mathbf{b}=0,
+		\label{eq:Vb0}
+	\end{equation}
+	which is solved by SVD in the same way as \eqref{eq:dlt}. The recovered $\mathbf{b}$ is then converted into $(f_x,f_y,c_x,c_y)$ through closed-form relations coded in the implementation.
+	
+	\section{Stage (3): pose seed per view}
+	
+	\subsection*{Removing intrinsics and selecting scale}
+	Given $\mathbf{K}_0$, compute
+	\begin{equation}
+		\mathbf{K}_0^{-1}\mathbf{H}_v = [\mathbf{h}'_{1}\ \mathbf{h}'_{2}\ \mathbf{h}'_{3}].
+		\label{eq:KinvH}
+	\end{equation}
+	A scale $s$ is selected so the first two columns become consistent with rotation columns. One convenient choice is an average-norm rule:
+	\begin{equation}
+		s=\frac{1}{\tfrac{1}{2}(\|\mathbf{h}'_{1}\|+\|\mathbf{h}'_{2}\|)}.
+		\label{eq:scale_s}
+	\end{equation}
+	Then
+	\begin{equation}
+		\mathbf{r}_1=s\mathbf{h}'_{1},\quad \mathbf{r}_2=s\mathbf{h}'_{2},\quad
+		\mathbf{r}_3=\mathbf{r}_1\times\mathbf{r}_2,\quad
+		\mathbf{t}=s\mathbf{h}'_{3}.
+		\label{eq:pose_from_H}
+	\end{equation}
+	
+	\subsection*{Projecting to a valid rotation}
+	Noise can make $\mathbf{R}=[\mathbf{r}_1\ \mathbf{r}_2\ \mathbf{r}_3]$ slightly non-orthonormal. A standard correction is the SVD projection:
+	\begin{equation}
+		\mathbf{R}=\mathbf{U}\boldsymbol{\Sigma}\mathbf{V}^T
+		\quad\Rightarrow\quad
+		\mathbf{R}\leftarrow \mathbf{U}\mathbf{V}^T.
+		\label{eq:svd_proj}
+	\end{equation}
+	If $\det(\mathbf{R})<0$, a sign flip is applied so that $\mathbf{R}$ becomes a proper rotation with determinant $+1$.
+	
+	\section{Stage (4): reprojection refinement}
+	
+	\subsection*{Packed parameter vector}
+	All unknowns are placed into a single vector
+	\begin{equation}
+		\mathbf{p}=
+		\begin{bmatrix}
+			f_x & f_y & c_x & c_y & k_1 & k_2 & p_1 & p_2 & \boldsymbol{\omega}_1^T & \mathbf{t}_1^T & \cdots & \boldsymbol{\omega}_M^T & \mathbf{t}_M^T
+		\end{bmatrix}^T.
+		\label{eq:param_pack}
+	\end{equation}
+	This makes it possible to update shared parameters and all per-view poses within one least-squares optimization loop.
+	
+	\subsection*{Residuals and objective}
+	For each view and point, the model predicts $\hat{\mathbf{u}}_{v,i}$ by applying \eqref{eq:rigid}, \eqref{eq:norm_xy}, \eqref{eq:dist_x}--\eqref{eq:dist_y}, and \eqref{eq:pix_uv}. The residual is
+	\begin{equation}
+		\mathbf{e}_{v,i}=\mathbf{u}_{v,i}-\hat{\mathbf{u}}_{v,i}.
+		\label{eq:resid}
+	\end{equation}
+	Stacking all residuals produces $\mathbf{r}(\mathbf{p})$, and the cost is
+	\begin{equation}
+		C(\mathbf{p})=\|\mathbf{r}(\mathbf{p})\|^2.
+		\label{eq:cost}
+	\end{equation}
+	Writing the objective in pixel space keeps the meaning of the optimization transparent: it minimizes pixel disagreement between measured and predicted locations.
+	
+	\subsection*{Finite-difference Jacobian with a stage mask}
+	The Jacobian $\mathbf{J}=\partial\mathbf{r}/\partial\mathbf{p}$ is approximated by central differences:
+	\begin{equation}
+		\mathbf{J}_{:,j}\approx
+		\frac{\mathbf{r}(\mathbf{p}+\epsilon_j\mathbf{e}_j)-\mathbf{r}(\mathbf{p}-\epsilon_j\mathbf{e}_j)}{2\epsilon_j},
+		\qquad
+		\epsilon_j=\epsilon_{\text{scale}}\max(1,|p_j|).
+		\label{eq:fdJ}
+	\end{equation}
+	A stage mask $\mathbf{m}\in\{0,1\}^{\dim(\mathbf{p})}$ selects which components of $\mathbf{p}$ are updated during a stage:
+	\begin{equation}
+		\Delta\mathbf{p}\leftarrow \mathbf{m}\odot \Delta\mathbf{p}.
+		\label{eq:mask}
+	\end{equation}
+	Staging is used because early iterations can suffer from parameter coupling, especially between focal scalings and distortion. Allowing fewer degrees of freedom first helps the optimizer settle onto a geometrically consistent configuration before enabling additional parameters.
+	
+	\subsection*{Levenberg--Marquardt update}
+	Levenberg--Marquardt computes an update $\Delta\mathbf{p}$ by solving
+	\begin{equation}
+		(\mathbf{J}^T\mathbf{J}+\lambda\mathbf{I})\Delta\mathbf{p}=-\mathbf{J}^T\mathbf{r}.
+		\label{eq:lm}
+	\end{equation}
+	The damping $\lambda$ balances local quadratic approximation and stability. When a proposed update reduces \eqref{eq:cost}, $\lambda$ is reduced, moving behavior toward Gauss--Newton. When a proposed update does not reduce cost, $\lambda$ is increased, which increases damping and yields more conservative steps.
+	
+	\section{Synthetic validation components}
+	
+	\subsection*{Planar grid construction}
+	A regular grid of target points is formed as
+	\begin{equation}
+		(X_i,Y_i)=(i\,s,\ j\,s),
+		\label{eq:grid}
+	\end{equation}
+	then lifted to 3D by \eqref{eq:plane_lift}. A spread-out pattern improves conditioning for homography estimation and reduces degeneracy in the linear constraints used for the intrinsic seed.
+	
+	\subsection*{Noisy observations}
+	Synthetic pixel measurements are generated by adding image-plane noise to predicted pixels:
+	\begin{equation}
+		\mathbf{u}_{v,i}=\hat{\mathbf{u}}_{v,i}+\boldsymbol{\eta},
+		\qquad
+		\boldsymbol{\eta}\sim\mathcal{N}(\mathbf{0},\sigma_{\text{px}}^2\mathbf{I}).
+		\label{eq:noise}
+	\end{equation}
+	This matches a common modeling assumption for corner localization uncertainty.
+	
+	\subsection*{Reprojection scoring}
+	The reprojection RMSE in \eqref{eq:rmse} is used to compare seed estimates with the refined parameters. It also provides a quick check against the noise floor when ground truth parameters are available in a synthetic setting.
+	
+	\section{Notes that connect equations to the implementation}
+	
+	This section lists every function, states its role in the flow, and points to the equation(s) it implements or supports. Each function name is given only in parentheses.
+	
+	\subsection*{Small utilities and parameter records}
+	\begin{itemize}
+		\item Token parsing for optional script inputs (\texttt{parse\_tokens}): no calibration equation; it prepares auxiliary configuration from a sequence of strings.
+		\item Scalar bounding helper (\texttt{\_clamp}): implements the clamp operation $\min(\max(x,\ell),h)$ used to keep values within chosen ranges.
+		\item Intrinsic record and camera-matrix constructor (\texttt{Intrinsics} and its matrix accessor \texttt{K}): constructs \eqref{eq:K}.
+		\item Distortion record (\texttt{Distortion}): stores $(k_1,k_2,p_1,p_2)$ used by \eqref{eq:dist_x}--\eqref{eq:dist_y}.
+		\item Pose record (\texttt{Extrinsics}): stores $(\boldsymbol{\omega}_v,\mathbf{t}_v)$ used by \eqref{eq:rigid}.
+	\end{itemize}
+	
+	\subsection*{Rotation and projection pieces}
+	\begin{itemize}
+		\item Rotation-vector to rotation-matrix map (\texttt{rodrigues\_to\_R}): implements \eqref{eq:rodrigues}.
+		\item Rotation-matrix to rotation-vector map (\texttt{rvec\_from\_R}): uses \eqref{eq:trace_theta} and antisymmetric differences of $\mathbf{R}$.
+		\item Normalized distortion map (\texttt{distort\_normalized}): implements \eqref{eq:r2}--\eqref{eq:dist_y}.
+		\item Full pinhole-plus-distortion projector (\texttt{project\_point}): composes \eqref{eq:rigid}, \eqref{eq:norm_xy}, \eqref{eq:dist_x}--\eqref{eq:dist_y}, and \eqref{eq:pix_uv}.
+	\end{itemize}
+	
+	\subsection*{Stage (1): homographies}
+	\begin{itemize}
+		\item Similarity normalization of 2D coordinates (\texttt{normalize\_2d}): supports the normalization discussion preceding \eqref{eq:Ah0}.
+		\item Homography estimation by DLT (\texttt{homography\_dlt}): implements \eqref{eq:homog}, \eqref{eq:Ah0}--\eqref{eq:denormH}.
+	\end{itemize}
+	
+	\subsection*{Stage (2): intrinsic seed}
+	\begin{itemize}
+		\item Constraint-vector constructor (\texttt{vij}): builds rows of $\mathbf{V}$ for \eqref{eq:Vb0} from homography columns in \eqref{eq:HB_constraints}.
+		\item Intrinsic initializer from many views (\texttt{intrinsics\_from\_homographies}): solves \eqref{eq:Vb0} and converts $\mathbf{b}$ into $(f_x,f_y,c_x,c_y)$, defining \eqref{eq:K}.
+	\end{itemize}
+	
+	\subsection*{Stage (3): pose seed}
+	\begin{itemize}
+		\item Pose initializer from a homography and intrinsics (\texttt{extrinsics\_from\_KH}): implements \eqref{eq:KinvH}--\eqref{eq:pose_from_H} and enforces \eqref{eq:svd_proj}.
+	\end{itemize}
+	
+	\subsection*{Stage (4): refinement}
+	\begin{itemize}
+		\item Parameter packing (\texttt{pack\_params}) and unpacking (\texttt{unpack\_params}): implement the layout in \eqref{eq:param_pack}.
+		\item Parameter bounding (\texttt{clamp\_params}): applies chosen bounds to keep the optimization numerically stable.
+		\item Residual construction (\texttt{compute\_residuals}): implements \eqref{eq:resid} and the stacking that defines $\mathbf{r}(\mathbf{p})$ for \eqref{eq:cost}.
+		\item Masked finite-difference Jacobian (\texttt{numeric\_jacobian\_active}): implements \eqref{eq:fdJ} for active parameters.
+		\item Staged Levenberg--Marquardt loop (\texttt{lm\_phased}): implements \eqref{eq:lm} with stage masking \eqref{eq:mask} and the damping adjustment logic.
+	\end{itemize}
+	
+	\subsection*{Synthetic test and scoring}
+	\begin{itemize}
+		\item Planar grid generator (\texttt{make\_planar\_grid}): implements \eqref{eq:grid} and lifts points via \eqref{eq:plane_lift}.
+		\item Random pose sampler (\texttt{random\_pose}): produces plausible $(\boldsymbol{\omega},\mathbf{t})$ for synthetic views; it supports stage (1)--(4) testing.
+		\item Synthetic measurement generator (\texttt{generate\_observations}): implements \eqref{eq:noise} using the projector.
+		\item Reprojection RMSE scorer (\texttt{rmse\_reproj}): implements \eqref{eq:rmse}.
+		\item In-bounds checker (\texttt{all\_inside}) and first violating view finder (\texttt{first\_outside\_view}): no calibration equation; they validate synthetic visibility for reliable conditioning.
+		\item End-to-end driver (\texttt{main}): wires together stages (1)--(4), then reports parameters and RMSE.
+	\end{itemize}
+	
+	\section{Why the chain holds together}
+	A planar target makes it possible to summarize each view by a homography (stage (1)). Multiple homographies share a single intrinsic matrix, and the orthonormal structure of rotation columns yields linear constraints in $\mathbf{K}^{-T}\mathbf{K}^{-1}$ (stage (2)). With intrinsics seeded, each pose is obtained by removing intrinsics from a homography, choosing a consistent scale, and projecting the resulting matrix back to the rotation group (stage (3)). Reprojection refinement then minimizes pixel-domain residuals using a damped least-squares update (stage (4)), which aligns the model to the data while maintaining stability through damping and staged parameter activation.
+	
+\end{document}
